@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 12px; min-width: 360px; }
+  textarea { width: 100%; height: 12em; box-sizing: border-box; font: 13px monospace; }
+  p { color: #666; margin: 6px 0; }
+</style>
+<p><label><input type="checkbox" id="seekbar"> <b>Seek bar on Instagram Reels</b></label></p>
+<p><label><input type="checkbox" id="adult"> <b>Enable 18+</b></label></p>
+<div id="adult-settings" hidden>
+  <p>Auto-advance in RedGifs fullscreen.</p>
+  <label for="niches"><b>Niches</b>, one per line</label>
+  <p>Use the name from the niche's URL (<code>redgifs.com/niches/<b>&lt;niche-name&gt;</b></code>) or paste the whole URL.
+    In fullscreen, gifs then play back to back, each picked at random from all of them. Leave empty to just advance through the current feed.</p>
+  <textarea id="niches" spellcheck="false"></textarea>
+  <p id="status"></p>
+</div>
+<script src="options.js"></script>
