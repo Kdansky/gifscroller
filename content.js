@@ -16,37 +16,51 @@ chrome.storage.onChanged.addListener(c => {
   if (c.adult) adult = c.adult.newValue
 })
 
-const pick = a => a[Math.floor(Math.random() * a.length)]
+const shuffle = a => a.sort(() => Math.random() - 0.5)
+
+// RedGifs rate-limits per IP, and its own player shares that budget, so our calls queue up at least this far apart.
+const GAP_MS = 2000
+let nextCall = 0
 
 async function get(path, token) {
+  const wait = nextCall - Date.now()
+  nextCall = Math.max(Date.now(), nextCall) + GAP_MS
+  if (wait > 0) await new Promise(r => setTimeout(r, wait))
   const r = await fetch('https://api.redgifs.com/v2/' + path, { headers: token ? { Authorization: 'Bearer ' + token } : {} })
-  if (!r.ok) throw new Error(`${r.status} ${path}`)
+  if (!r.ok) throw Object.assign(new Error(`${r.status} ${path}`), { status: r.status })
   return r.json()
 }
 
 let auth = null
-// Page counts barely change, and caching them halves the API calls per gif.
+// Page counts barely change, so one lookup per niche is enough.
 const pageCounts = new Map()
+// Each page holds 80 gifs; using them all instead of one per fetch is what keeps us under the rate limit.
+const pools = new Map()
 
 // Tries niches in random order so one disabled or misspelled niche doesn't stall the rotation.
 async function randomGif() {
-  auth ??= get('auth/temporary').then(j => j.token)
+  // A failed token request mustn't stay cached, or every later call fails without asking again.
+  auth ??= get('auth/temporary').then(j => j.token).catch(e => {
+    auth = null
+    throw e
+  })
   const token = await auth
-  for (const niche of [...niches].sort(() => Math.random() - 0.5)) {
+  for (const niche of shuffle([...niches])) {
+    if (pools.get(niche)?.length) return pools.get(niche).pop()
     try {
       const page = p => get(`niches/${niche}/gifs?order=${ORDER}&count=80&page=${p}`, token)
-      let j = null
-      if (!pageCounts.has(niche)) {
-        j = await page(1)
-        pageCounts.set(niche, Math.min(j.pages, 100))
-      }
-      const pages = pageCounts.get(niche)
-      if (pages > 1 || !j) j = await page(1 + Math.floor(Math.random() * pages))
+      const n = pageCounts.get(niche)
+      const j = await page(n ? 1 + Math.floor(Math.random() * n) : 1)
+      pageCounts.set(niche, Math.min(j.pages, 100))
       // type 2 is a still image, which would never end
-      const gifs = j.gifs.filter(g => g.type === 1)
-      if (gifs.length) return pick(gifs)
+      const gifs = shuffle(j.gifs.filter(g => g.type === 1))
+      pools.set(niche, gifs)
+      if (gifs.length) return gifs.pop()
     } catch (e) {
       console.warn('[auto-advance]', niche, e)
+      // Trying the other niches would only hit the same limit, and the token is still good.
+      if (e.status === 429) return
+      if (e.status === 401) break
     }
   }
   // Every niche failing usually means the token expired.
@@ -72,18 +86,39 @@ const active = {
 // out of fullscreen. The spare video preloads the next gif so switching has no gap.
 let player = null
 
-// Failures back off up to a minute: retrying fast keeps a rate limit going, which then blocks RedGifs' own player too.
-async function load(v, wait = 3000) {
-  const g = await randomGif().catch(e => console.warn('[auto-advance]', e))
-  if (!v.isConnected) return
-  if (!g) return setTimeout(() => load(v, Math.min(wait * 2, 60000)), wait)
+// Gifs already watched, so ArrowUp can go back; `pos` is the one on screen.
+const HISTORY = 200
+
+function record(g) {
+  const { hist } = player
+  hist.push(g)
+  if (hist.length > HISTORY) hist.shift()
+  player.pos = hist.length - 1
+}
+
+function put(v, g) {
+  v.gif = g
   v.poster = g.urls.poster
   v.src = g.urls.hd
-  if (v === player.shown) v.play()
+}
+
+// Failures back off up to a minute: retrying fast keeps a rate limit going, which then blocks RedGifs' own player too.
+// A newer load or a jump through history supersedes a pending one, which would otherwise overwrite it.
+async function load(v, wait = 3000) {
+  const req = v.req = {}
+  const g = await randomGif().catch(e => console.warn('[auto-advance]', e))
+  if (!v.isConnected || v.req !== req) return
+  if (!g) return setTimeout(() => v.req === req && load(v, Math.min(wait * 2, 60000)), wait)
+  put(v, g)
+  if (v === player.shown) {
+    record(g)
+    v.play()
+  }
 }
 
 // Dropping the src alone keeps the decoder and buffered video alive until the next load; over hours that piles up.
 function release(v) {
+  v.req = v.gif = null
   v.removeAttribute('src')
   v.load()
 }
@@ -104,20 +139,51 @@ function openPlayer() {
     v.onerror = () => setTimeout(() => load(v), 3000)
     return v
   })
-  el.onclick = () => el.querySelectorAll('video').forEach(v => v.muted = !v.muted)
+  // The overlay hides RedGifs' own buttons, so it brings its own way out and its own sound toggle.
+  const btn = (text, right, fn) => {
+    const b = el.appendChild(document.createElement('button'))
+    b.textContent = text
+    b.style.cssText = `position:absolute;top:12px;right:${right}px;z-index:1;width:40px;height:40px;border:0;border-radius:50%;` +
+      'background:#0008;color:#fff;font-size:20px;cursor:pointer'
+    b.onclick = e => {
+      e.stopPropagation()
+      fn()
+    }
+    return b
+  }
+  // RedGifs leaves fullscreen on Escape; the interval then closes the player.
+  btn('✕', 12, () => dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+  const sound = btn('🔇', 60, mute)
+  el.onclick = () => player.shown.paused ? player.shown.play() : player.shown.pause()
   document.querySelectorAll('video').forEach(v => v.pause())
   document.body.append(el)
-  player = { el, shown, spare }
+  player = { el, shown, spare, sound, hist: [], pos: -1 }
   show(shown)
   load(shown)
   load(spare)
 }
 
+function mute() {
+  const m = !player.shown.muted
+  player.shown.muted = player.spare.muted = m
+  player.sound.textContent = m ? '🔇' : '🔊'
+}
+
+// Replays a gif from history in the shown video; the spare keeps holding the next new one.
+function revisit(pos) {
+  player.pos = pos
+  put(player.shown, player.hist[pos])
+  player.shown.req = null
+  player.shown.play()
+}
+
 function advance() {
+  if (player.pos < player.hist.length - 1) return revisit(player.pos + 1)
   const { shown, spare } = player
   player.shown = spare
   player.spare = shown
   show(spare)
+  if (spare.gif) record(spare.gif)
   shown.pause()
   shown.style.visibility = 'hidden'
   release(shown)
@@ -176,7 +242,19 @@ if (site === 'redgifs') setInterval(() => {
   }
 }, 300)
 
-document.addEventListener('keydown', e => { if (player && e.key === 'ArrowDown') advance() })
+// Capturing on window runs before RedGifs' own listener, which would scroll the hidden feed underneath.
+const keys = {
+  ArrowDown: advance,
+  ArrowUp: () => player.pos > 0 && revisit(player.pos - 1),
+  ' ': () => player.el.click(),
+  m: mute,
+}
+addEventListener('keydown', e => {
+  if (!player || !keys[e.key] || e.target.closest?.('input, textarea, [contenteditable]')) return
+  e.preventDefault()
+  e.stopImmediatePropagation()
+  keys[e.key]()
+}, true)
 
 const seen = new WeakMap()
 let cooldown = 0

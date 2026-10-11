@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Feed Auto-Advance",
-  "version": "2.2",
+  "version": "2.4",
   "description": "Automatically skips to the next short video on sites such as TikTok, Instagram Reels, YouTube Shorts, Facebook Reels, Snapchat Spotlight and others.",
   "permissions": ["storage", "scripting"],
   "background": { "service_worker": "background.js", "scripts": ["background.js"] },
