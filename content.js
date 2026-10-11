@@ -25,6 +25,8 @@ async function get(path, token) {
 }
 
 let auth = null
+// Page counts barely change, and caching them halves the API calls per gif.
+const pageCounts = new Map()
 
 // Tries niches in random order so one disabled or misspelled niche doesn't stall the rotation.
 async function randomGif() {
@@ -33,9 +35,13 @@ async function randomGif() {
   for (const niche of [...niches].sort(() => Math.random() - 0.5)) {
     try {
       const page = p => get(`niches/${niche}/gifs?order=${ORDER}&count=80&page=${p}`, token)
-      let j = await page(1)
-      const pages = Math.min(j.pages, 100)
-      if (pages > 1) j = await page(1 + Math.floor(Math.random() * pages))
+      let j = null
+      if (!pageCounts.has(niche)) {
+        j = await page(1)
+        pageCounts.set(niche, Math.min(j.pages, 100))
+      }
+      const pages = pageCounts.get(niche)
+      if (pages > 1 || !j) j = await page(1 + Math.floor(Math.random() * pages))
       // type 2 is a still image, which would never end
       const gifs = j.gifs.filter(g => g.type === 1)
       if (gifs.length) return pick(gifs)
@@ -66,13 +72,20 @@ const active = {
 // out of fullscreen. The spare video preloads the next gif so switching has no gap.
 let player = null
 
-async function load(v) {
+// Failures back off up to a minute: retrying fast keeps a rate limit going, which then blocks RedGifs' own player too.
+async function load(v, wait = 3000) {
   const g = await randomGif().catch(e => console.warn('[auto-advance]', e))
   if (!v.isConnected) return
-  if (!g) return setTimeout(() => load(v), 3000)
+  if (!g) return setTimeout(() => load(v, Math.min(wait * 2, 60000)), wait)
   v.poster = g.urls.poster
   v.src = g.urls.hd
   if (v === player.shown) v.play()
+}
+
+// Dropping the src alone keeps the decoder and buffered video alive until the next load; over hours that piles up.
+function release(v) {
+  v.removeAttribute('src')
+  v.load()
 }
 
 function show(v) {
@@ -87,6 +100,8 @@ function openPlayer() {
     const v = el.appendChild(document.createElement('video'))
     Object.assign(v, { loop: true, muted: true, playsInline: true, preload: 'auto' })
     v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;visibility:hidden'
+    // An expired or missing file would otherwise stay black forever.
+    v.onerror = () => setTimeout(() => load(v), 3000)
     return v
   })
   el.onclick = () => el.querySelectorAll('video').forEach(v => v.muted = !v.muted)
@@ -105,7 +120,7 @@ function advance() {
   show(spare)
   shown.pause()
   shown.style.visibility = 'hidden'
-  shown.removeAttribute('src')
+  release(shown)
   load(shown)
 }
 
@@ -145,8 +160,12 @@ if (site === 'redgifs') setInterval(() => {
   if (want && !player) openPlayer()
   if (!want && player) {
     player.el.remove()
+    release(player.shown)
+    release(player.spare)
     player = null
   }
+  // RedGifs restarts its own feed videos underneath ours, decoding HD video nobody sees.
+  if (player) document.querySelectorAll('video').forEach(v => player.el.contains(v) || v.pause())
   if (!on || player || !active()) return parked = null
   const item = document.elementFromPoint(innerWidth / 2, innerHeight / 2)?.closest('[data-feed-item-id]')
   if (!item || item.matches('.GifPreview_isVideo')) return parked = null
