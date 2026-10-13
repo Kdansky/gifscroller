@@ -1,17 +1,20 @@
 const box = document.getElementById('niches')
 const status = document.getElementById('status')
 
-chrome.storage.local.get({ niches: [] }).then(s => box.value = s.niches.join('\n'))
+chrome.storage.sync.get({ niches: [] }).then(s => box.value = s.niches.join('\n'))
 
+// Sync storage rate-limits writes, so typing saves once it pauses. Not on blur: closing the options panel may not blur the box.
+let timer
 box.addEventListener('input', () => {
   const niches = box.value.split('\n').map(l => l.trim().replace(/.*\/niches\//, '').replace(/[/?#].*/, '')).filter(Boolean)
-  chrome.storage.local.set({ niches })
+  clearTimeout(timer)
+  timer = setTimeout(() => chrome.storage.sync.set({ niches }), 500)
   status.textContent = niches.length ? `Saved: ${niches.length} niche${niches.length > 1 ? 's' : ''}` : 'Saved: scrolling the current feed'
 })
 
 const seekbar = document.getElementById('seekbar')
-chrome.storage.local.get({ seekbar: true }).then(s => seekbar.checked = s.seekbar)
-seekbar.addEventListener('change', () => chrome.storage.local.set({ seekbar: seekbar.checked }))
+chrome.storage.sync.get({ seekbar: true }).then(s => seekbar.checked = s.seekbar)
+seekbar.addEventListener('change', () => chrome.storage.sync.set({ seekbar: seekbar.checked }))
 
 const adult = document.getElementById('adult')
 const show = () => document.getElementById('adult-settings').hidden = !adult.checked

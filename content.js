@@ -7,8 +7,8 @@ let on = true
 let niches = []
 let seekbar = true
 let adult = false
-chrome.storage.local.get({ on: true, niches: [], seekbar: true, adult: false })
-  .then(s => [on, niches, seekbar, adult] = [s.on, s.niches, s.seekbar, s.adult])
+chrome.storage.local.get({ on: true, adult: false }).then(s => [on, adult] = [s.on, s.adult])
+chrome.storage.sync.get({ niches: [], seekbar: true }).then(s => [niches, seekbar] = [s.niches, s.seekbar])
 chrome.storage.onChanged.addListener(c => {
   if (c.on) on = c.on.newValue
   if (c.niches) niches = c.niches.newValue
